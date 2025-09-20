@@ -1,11 +1,10 @@
 package dictionary
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.IOException
-import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
 object Repository {
@@ -21,8 +20,7 @@ object Repository {
     val client = OkHttpClient()
 
 
-    fun loadDefinition(word: String, callback: (Result<Definition>) -> Unit) {
-
+    private fun loadDefinition(word: String, callback: (Result<List<String>>) -> Unit) {
         val url = BASE_URL.toHttpUrl().newBuilder()
             .addQueryParameter("word", word)
             .build()
@@ -40,7 +38,7 @@ object Repository {
                 try {
                     if (response.isSuccessful) {
                         response.body?.let { responseBody ->
-                            callback(Result.success(json.decodeFromString<Definition>(responseBody.string())))
+                            callback(Result.success(json.decodeFromString<Definition>(responseBody.string()).mapDefinitionToList()))
                         }
                     } else {
                         callback(Result.failure(IOException("Http Error: ${response.code}")))
@@ -54,45 +52,25 @@ object Repository {
             }
         })
     }
-}
-
-private val dispatcher = Executors.newCachedThreadPool().asCoroutineDispatcher()
-private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
-    println("Cathed exception $throwable")
-}
-private val scope = CoroutineScope(dispatcher + exceptionHandler)
-
-
-fun main() {
-    scope.launch {
-        while (true) {
-            print("Enter word or exit: ")
-            val word = readln().trim()
-            if (word == "exit") break
-            if (word.isBlank()) {
-                println("Enter a valid word")
-                continue
+    suspend fun loadData(word: String): List<String> {
+        return suspendCancellableCoroutine { continuation ->
+            loadDefinition(word) { result ->
+                result.fold(
+                    onSuccess = {
+                        continuation.resume(it)
+                    },
+                    onFailure = {
+                        continuation.resume(emptyList())
+                    }
+                )
             }
-            val definition = loadData(word)
-            println(definition)
+            continuation.invokeOnCancellation {
+                println("Request cancelled")
+            }
         }
     }
-}
 
-private suspend fun loadData(word: String): Definition? {
-    return suspendCancellableCoroutine { continuation ->
-        Repository.loadDefinition(word) { result ->
-            result.fold(
-                onSuccess = {
-                    continuation.resume(it)
-                },
-                onFailure = {
-                    continuation.resume(null)
-                }
-            )
-        }
-        continuation.invokeOnCancellation {
-            println("Request cancelled")
-        }
+    private fun Definition.mapDefinitionToList(): List<String> {
+        return this.definition.split(Regex("\\d. ")).map { it.trim() }.filter { it.isNotEmpty() }
     }
 }
